@@ -1102,7 +1102,7 @@ def set_autofreq():
     """
     print("\n" + "-" * 28 + " CPU frequency scaling " + "-" * 28 + "\n")
 
-    load1m, _, load15m = os.getloadavg()
+    load1m, load5m, load15m = os.getloadavg()
     cpuload = psutil.cpu_percent(interval=1)
     current_governor = getoutput("cpufreqctl.auto-cpufreq --governor").strip().split(" ")[0]
     is_charging = charging()
@@ -1113,12 +1113,12 @@ def set_autofreq():
         set_powersave()
     elif override == "performance":
         set_performance()
-    elif is_charging and cpuload < 20 and load1m <= 1 and load15m <= 1:
+    elif is_charging and cpuload < 20 and load1m <= 1 and load5m <= 1 and load15m <= 1:
         if current_governor != 'conservative':
             # In case the system is idle and not under high load
             print(f'Setting to use: "conservative" governor')
             run(f"cpufreqctl.auto-cpufreq --governor --set=conservative", shell=True)
-    elif is_charging and load1m <= performance_load_threshold and load15m <= performance_load_threshold:
+    elif is_charging and load1m <= performance_load_threshold and load5m <= performance_load_threshold:
         if current_governor != 'ondemand':
             # In case the system is not under high load
             print(f'Setting to use: "ondemand" governor')
