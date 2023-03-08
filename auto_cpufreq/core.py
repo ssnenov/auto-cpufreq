@@ -58,8 +58,11 @@ performance_load_threshold = (50 * CPUS) / 100
 throttle_temperature = 80
 throttle_temperature_critical = 90
 throttle_enabled = False
-throttle_available_frequencies = list(map(lambda freq: int(freq), filter(lambda freq: freq, getoutput(f"cpufreqctl.auto-cpufreq --frequency --available").split(' '))))
-throttle_available_frequencies.sort()
+try:
+    throttle_available_frequencies = list(map(lambda freq: int(freq), filter(lambda freq: freq, getoutput(f"cpufreqctl.auto-cpufreq --frequency --available").split(' '))))
+    throttle_available_frequencies.sort()
+except:
+    print("Cannot get available CPU frequencies")
 
 # auto-cpufreq stats file path
 auto_cpufreq_stats_path = None
@@ -608,6 +611,9 @@ def set_frequencies():
 def throttle_cpu_freq():
     global throttle_enabled
     global throttle_temperature
+    
+    if not throttle_available_frequencies:
+        return
 
     cpuload = psutil.cpu_percent(interval=1)
     if avg_all_core_temp >= throttle_temperature and cpuload > 20:
