@@ -54,6 +54,13 @@ POWER_SUPPLY_IGNORELIST = ["hidpp_battery"]
 powersave_load_threshold = (75 * CPUS) / 100
 performance_load_threshold = (50 * CPUS) / 100
 
+# Throttling
+throttle_temperature = 80
+throttle_temperature_critical = 90
+throttle_enabled = False
+throttle_available_frequencies = list(map(lambda freq: int(freq), filter(lambda freq: freq, getoutput(f"cpufreqctl.auto-cpufreq --frequency --available").split(' '))))
+throttle_available_frequencies.sort()
+
 # auto-cpufreq stats file path
 auto_cpufreq_stats_path = None
 auto_cpufreq_stats_file = None
@@ -183,6 +190,11 @@ def turbo(value: bool = None):
     """
     Get and set turbo mode
     """
+
+    if avg_all_core_temp >= throttle_temperature:
+        print("Warning: Due to overheating throttling the CPU by setting turbo mode to off")
+        value = False
+
     p_state = Path("/sys/devices/system/cpu/intel_pstate/no_turbo")
     cpufreq = Path("/sys/devices/system/cpu/cpufreq/boost")
 
@@ -592,6 +604,51 @@ def set_frequencies():
         # set the frequency
         print(message)
         run(f"cpufreqctl.auto-cpufreq {args}", shell=True)
+
+def throttle_cpu_freq():
+    global throttle_enabled
+    global throttle_temperature
+
+    cpuload = psutil.cpu_percent(interval=1)
+    if avg_all_core_temp >= throttle_temperature and cpuload > 20:
+        load1m, _, _ = os.getloadavg()
+        if avg_all_core_temp >= (throttle_temperature_critical + 5): # When curent load is at least 20% and +5C above critical temp is reached regardless the avg load during the last minute
+            throttle_frequency = throttle_available_frequencies[int(round((len(throttle_available_frequencies) - 1) * 0.5))]
+        elif avg_all_core_temp >= throttle_temperature_critical and load1m >= performance_load_threshold: # When current load is at least 20% and system is at High load during the last minute
+            throttle_frequency = throttle_available_frequencies[int(round((len(throttle_available_frequencies) - 1) * 0.7))]
+        else: # When curent load is at least 20% and relativley high temp is reached regardless of the avg load during the last minute
+            throttle_frequency = throttle_available_frequencies[int(round((len(throttle_available_frequencies) - 1) * 0.9))]
+            
+        scaling_max_freq = {
+            "cmdargs": "--frequency-max",
+            "minmax": "maximum",
+            "value": throttle_frequency
+        }
+
+        print(f'Throttling: setting maximum CPU frequency to {round(scaling_max_freq["value"]/1000)} Mhz')
+        args = f"{scaling_max_freq['cmdargs']} --set={scaling_max_freq['value']}"
+        run(f"cpufreqctl.auto-cpufreq {args}", shell=True)
+        throttle_enabled = True
+    elif throttle_enabled and avg_all_core_temp < throttle_temperature:
+        scaling_max_freq = {
+            "cmdargs": "--frequency-max",
+            "minmax": "maximum",
+            "value": throttle_available_frequencies[len(throttle_available_frequencies) - 1]
+        }
+
+        print(f'Throttling: setting CPU frequency back to maximum frequency {round(scaling_max_freq["value"]/1000)} Mhz')
+        args = f"{scaling_max_freq['cmdargs']} --set={scaling_max_freq['value']}"
+        run(f"cpufreqctl.auto-cpufreq {args}", shell=True)
+        throttle_enabled = False
+
+def mon_throttle_cpu_freq():
+    global throttle_enabled
+    if avg_all_core_temp >= throttle_temperature and not throttle_enabled:
+        print(f'Throttling: Suggesting CPU to throttle the CPU frequency')
+        throttle_enabled = True
+    elif avg_all_core_temp < throttle_temperature and throttle_enabled:
+        throttle_enabled = False
+        print(f'Throttling: Suggesting CPU back to maximum frequency to {round(set_frequencies.max_limit/1000)} Mhz')
 
 
 # set powersave and enable turbo
@@ -1022,18 +1079,35 @@ def set_autofreq():
     """
     print("\n" + "-" * 28 + " CPU frequency scaling " + "-" * 28 + "\n")
 
+    load1m, _, load15m = os.getloadavg()
+    cpuload = psutil.cpu_percent(interval=1)
+    current_governor = getoutput("cpufreqctl.auto-cpufreq --governor").strip().split(" ")[0]
+    is_charging = charging()
+
     # determine which governor should be used
     override = get_override()
     if override == "powersave":
         set_powersave()
     elif override == "performance":
         set_performance()
-    elif charging():
+    elif is_charging and cpuload < 20 and load1m <= 1 and load15m <= 1:
+        if current_governor != 'conservative':
+            # In case the system is idle and not under high load
+            print(f'Setting to use: "conservative" governor')
+            run(f"cpufreqctl.auto-cpufreq --governor --set=conservative", shell=True)
+    elif is_charging and load1m <= performance_load_threshold and load15m <= performance_load_threshold:
+        if current_governor != 'ondemand':
+            # In case the system is not under high load
+            print(f'Setting to use: "ondemand" governor')
+            run(f"cpufreqctl.auto-cpufreq --governor --set=ondemand", shell=True)
+    elif is_charging:
         print("Battery is: charging\n")
         set_performance()
     else:
         print("Battery is: discharging\n")
         set_powersave()
+    
+    throttle_cpu_freq()
 
 
 def mon_autofreq():
@@ -1044,7 +1118,9 @@ def mon_autofreq():
     print("\n" + "-" * 28 + " CPU frequency scaling " + "-" * 28 + "\n")
 
     # determine which governor should be used
-    if charging():
+    if avg_all_core_temp >= throttle_temperature:
+        mon_throttle_cpu_freq()
+    elif charging():
         print("Battery is: charging\n")
         get_current_gov()
         print(f'Suggesting use of "{get_avail_performance()}" governor')
