@@ -616,19 +616,26 @@ def throttle_cpu_freq():
         return
 
     cpuload = psutil.cpu_percent(interval=1)
+    maximum_available_frequency = throttle_available_frequencies[len(throttle_available_frequencies) - 1]
     if avg_all_core_temp >= throttle_temperature and cpuload > 20:
         load1m, _, _ = os.getloadavg()
-        if avg_all_core_temp >= (throttle_temperature_critical + 5): # When curent load is at least 20% and +5C above critical temp is reached regardless the avg load during the last minute
-            throttle_frequency = throttle_available_frequencies[int(round((len(throttle_available_frequencies) - 1) * 0.5))]
-        elif avg_all_core_temp >= throttle_temperature_critical and load1m >= performance_load_threshold: # When current load is at least 20% and system is at High load during the last minute
-            throttle_frequency = throttle_available_frequencies[int(round((len(throttle_available_frequencies) - 1) * 0.7))]
-        else: # When curent load is at least 20% and relativley high temp is reached regardless of the avg load during the last minute
-            throttle_frequency = throttle_available_frequencies[int(round((len(throttle_available_frequencies) - 1) * 0.9))]
-            
+        scale_down_factor = 1
+        if avg_all_core_temp >= (throttle_temperature_critical + 5):
+            # When curent load is at least 20% and +5C above critical temp is reached regardless the avg load during the last minute
+            # This should be an extream case
+            scale_down_factor = 0.6
+        elif avg_all_core_temp >= throttle_temperature_critical and load1m >= performance_load_threshold:
+            # When current load is at least 20% and system is at High load during the last minute
+            scale_down_factor = 0.8
+        else:
+            # When curent load is at least 20% and relativley high temp is reached regardless of the avg load during the last minute
+            scale_down_factor = 0.95
+
+        frequency_index = find_closest_frequency_index(throttle_available_frequencies, maximum_available_frequency * scale_down_factor)
         scaling_max_freq = {
             "cmdargs": "--frequency-max",
             "minmax": "maximum",
-            "value": throttle_frequency
+            "value": throttle_available_frequencies[frequency_index]
         }
 
         print(f'Throttling: setting maximum CPU frequency to {round(scaling_max_freq["value"]/1000)} Mhz')
@@ -639,13 +646,23 @@ def throttle_cpu_freq():
         scaling_max_freq = {
             "cmdargs": "--frequency-max",
             "minmax": "maximum",
-            "value": throttle_available_frequencies[len(throttle_available_frequencies) - 1]
+            "value": maximum_available_frequency
         }
 
         print(f'Throttling: setting CPU frequency back to maximum frequency {round(scaling_max_freq["value"]/1000)} Mhz')
         args = f"{scaling_max_freq['cmdargs']} --set={scaling_max_freq['value']}"
         run(f"cpufreqctl.auto-cpufreq {args}", shell=True)
         throttle_enabled = False
+
+def find_closest_frequency_index(frequencies: list[int], searchValue):
+    closest_index = 0
+    closest_delta = frequencies[0]
+    minimal_freq = frequencies[0]
+    for index,frequency in enumerate(frequencies):
+        if abs(frequency - searchValue) < closest_delta:
+            closest_delta = abs(frequencies[index] - searchValue)
+            closest_index = index
+    return closest_index
 
 def mon_throttle_cpu_freq():
     global throttle_enabled
