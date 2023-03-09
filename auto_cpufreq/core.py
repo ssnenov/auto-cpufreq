@@ -58,6 +58,7 @@ performance_load_threshold = (50 * CPUS) / 100
 throttle_temperature = 80
 throttle_temperature_critical = 90
 throttle_enabled = False
+throttle_available_frequencies = None
 try:
     throttle_available_frequencies = list(map(lambda freq: int(freq), filter(lambda freq: freq, getoutput(f"cpufreqctl.auto-cpufreq --frequency --available").split(' '))))
     throttle_available_frequencies.sort()
@@ -617,6 +618,8 @@ def throttle_cpu_freq():
 
     cpuload = psutil.cpu_percent(interval=1)
     maximum_available_frequency = throttle_available_frequencies[len(throttle_available_frequencies) - 1]
+    current_frequency = int(getoutput('cpufreqctl.auto-cpufreq --frequency-max'))
+    current_frequency_index = throttle_available_frequencies.index(current_frequency)
     if avg_all_core_temp >= throttle_temperature and cpuload > 20:
         load1m, _, _ = os.getloadavg()
         scale_down_factor = 1
@@ -632,6 +635,11 @@ def throttle_cpu_freq():
             scale_down_factor = 0.95
 
         frequency_index = find_closest_frequency_index(throttle_available_frequencies, maximum_available_frequency * scale_down_factor)
+
+        if frequency_index > current_frequency_index:
+            # In case the throttling reduced the temperature from previous iterrations and tries to increase the freq - we have to do it slowly
+            frequency_index = current_frequency_index + 1
+
         scaling_max_freq = {
             "cmdargs": "--frequency-max",
             "minmax": "maximum",
@@ -643,16 +651,19 @@ def throttle_cpu_freq():
         run(f"cpufreqctl.auto-cpufreq {args}", shell=True)
         throttle_enabled = True
     elif throttle_enabled and avg_all_core_temp < throttle_temperature:
+        if current_frequency >= maximum_available_frequency:
+            return
+        
         scaling_max_freq = {
             "cmdargs": "--frequency-max",
             "minmax": "maximum",
-            "value": maximum_available_frequency
+            "value": throttle_available_frequencies[current_frequency_index + 1]
         }
 
-        print(f'Throttling: setting CPU frequency back to maximum frequency {round(scaling_max_freq["value"]/1000)} Mhz')
+        print(f'Throttling: bumping up CPU frequency to {round(scaling_max_freq["value"]/1000)} Mhz')
         args = f"{scaling_max_freq['cmdargs']} --set={scaling_max_freq['value']}"
         run(f"cpufreqctl.auto-cpufreq {args}", shell=True)
-        throttle_enabled = False
+        throttle_enabled = scaling_max_freq["value"] != maximum_available_frequency
 
 def find_closest_frequency_index(frequencies: list[int], searchValue):
     closest_index = 0
@@ -1106,6 +1117,7 @@ def set_autofreq():
     cpuload = psutil.cpu_percent(interval=1)
     current_governor = getoutput("cpufreqctl.auto-cpufreq --governor").strip().split(" ")[0]
     is_charging = charging()
+    print('Current governor: ' + current_governor)
 
     # determine which governor should be used
     override = get_override()
